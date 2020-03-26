@@ -33,7 +33,7 @@ public:
     double GetAverageDelay() const;
     void Reset();
     void HandleInput(std::uint8_t* data, std::size_t len, std::uint32_t timestamp, bool isEC);
-    std::size_t HandleOutput(std::uint8_t* buffer, std::size_t len, int offsetInSteps,
+    std::size_t HandleOutput(std::uint8_t* buffer, std::size_t len, unsigned int offsetInSteps,
                              bool advance, int& playbackScaledDuration, bool& isEC);
     void Tick();
     void GetAverageLateCount(double* out) const;
