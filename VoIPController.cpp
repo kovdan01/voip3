@@ -2963,11 +2963,11 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
             std::uint8_t flags = streamID & 0xC0;
             streamID &= 0x3F;
             std::uint16_t sdlen = (flags & STREAM_DATA_FLAG_LEN16 ? in.ReadUInt16() : in.ReadUInt8());
-            std::uint32_t pts = in.ReadUInt32();
+            std::uint32_t pktTimestamp = in.ReadUInt32();
             std::uint8_t fragmentCount = 1;
             std::uint8_t fragmentIndex = 0;
             //LOGD("stream data, pts=%d, len=%d, rem=%d", pts, sdlen, in.Remaining());
-            m_audioTimestampIn = pts;
+            m_audioTimestampIn = pktTimestamp;
             if (!m_audioOutStarted && m_audioOutput != nullptr)
             {
                 MutexGuard m(m_audioIOMutex);
@@ -3009,7 +3009,7 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
                 {
                     if (stream->jitterBuffer == nullptr)
                         break;
-                    stream->jitterBuffer->HandleInput(reinterpret_cast<std::uint8_t*>(buffer + in.GetOffset()), sdlen, pts, false);
+                    stream->jitterBuffer->HandleInput(reinterpret_cast<std::uint8_t*>(buffer + in.GetOffset()), sdlen, pktTimestamp, false);
                     if (extraFEC)
                     {
                         in.Seek(in.GetOffset() + sdlen);
@@ -3019,7 +3019,7 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
                             std::uint8_t dlen = in.ReadUInt8();
                             std::uint8_t data[256];
                             in.ReadBytes(data, dlen);
-                            stream->jitterBuffer->HandleInput(data, dlen, pts - (fecCount - j) * stream->frameDuration, true);
+                            stream->jitterBuffer->HandleInput(data, dlen, pktTimestamp - (fecCount - j) * stream->frameDuration, true);
                         }
                     }
                 }
@@ -3056,7 +3056,7 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
                         //}
                     }
                     pdata.CopyFrom(buffer + in.GetOffset(), 0, sdlen);
-                    stream->packetReassembler->AddFragment(std::move(pdata), fragmentIndex, fragmentCount, pts, frameSeq, keyframe, rotation);
+                    stream->packetReassembler->AddFragment(std::move(pdata), fragmentIndex, fragmentCount, pktTimestamp, frameSeq, keyframe, rotation);
                     //LOGV("Received video fragment %u of %u", fragmentIndex, fragmentCount);
                 }
                 }
