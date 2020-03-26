@@ -89,7 +89,7 @@ IPv6Address::IPv6Address(std::string addr)
 #pragma mark - Public API
 
 VoIPController::VoIPController()
-    : m_conctl(new CongestionControl())
+    : m_congestionControl(new CongestionControl())
     , m_udpSocket(NetworkSocket::Create(NetworkProtocol::UDP))
     , m_realUdpSocket(m_udpSocket)
     , m_selectCanceller(SocketSelectCanceller::Create())
@@ -125,13 +125,13 @@ VoIPController::VoIPController()
     machTimestart = 0;
 #endif
 
-    std::shared_ptr<Stream> stm = std::make_shared<Stream>();
-    stm->id = 1;
-    stm->type = StreamType::AUDIO;
-    stm->codec = CODEC_OPUS;
-    stm->enabled = true;
-    stm->frameDuration = 60;
-    m_outgoingStreams.emplace_back(std::move(stm));
+    std::shared_ptr<Stream> stream = std::make_shared<Stream>();
+    stream->id = 1;
+    stream->type = StreamType::AUDIO;
+    stream->codec = CODEC_OPUS;
+    stream->enabled = true;
+    stream->frameDuration = 60;
+    m_outgoingStreams.emplace_back(std::move(stream));
 }
 
 VoIPController::~VoIPController()
@@ -168,7 +168,7 @@ VoIPController::~VoIPController()
         m_echoCanceller->Stop();
         delete m_echoCanceller;
     }
-    delete m_conctl;
+    delete m_congestionControl;
     if (m_statsDump != nullptr)
         fclose(m_statsDump);
     delete m_selectCanceller;
@@ -582,10 +582,10 @@ std::string VoIPController::GetDebugString()
         r += buffer;
     }
     double avgLate[3];
-    std::shared_ptr<Stream> stm = GetStreamByType(StreamType::AUDIO, false);
+    std::shared_ptr<Stream> stream = GetStreamByType(StreamType::AUDIO, false);
     std::shared_ptr<JitterBuffer> jitterBuffer;
-    if (stm != nullptr)
-        jitterBuffer = stm->jitterBuffer;
+    if (stream != nullptr)
+        jitterBuffer = stream->jitterBuffer;
     if (jitterBuffer != nullptr)
         jitterBuffer->GetAverageLateCount(avgLate);
     else
@@ -611,10 +611,10 @@ std::string VoIPController::GetDebugString()
         avgLate[1],
         avgLate[2],
         // (int)(GetAverageRTT()*1000), 0,
-        static_cast<int>(m_conctl->GetAverageRTT() * 1000),
-        static_cast<int>(m_conctl->GetMinimumRTT() * 1000),
-        static_cast<int>(m_conctl->GetInflightDataSize()),
-        static_cast<int>(m_conctl->GetCongestionWindow()),
+        static_cast<int>(m_congestionControl->GetAverageRTT() * 1000),
+        static_cast<int>(m_congestionControl->GetMinimumRTT() * 1000),
+        static_cast<int>(m_congestionControl->GetInflightDataSize()),
+        static_cast<int>(m_congestionControl->GetCongestionWindow()),
         m_keyFingerprint[0],
         m_keyFingerprint[1],
         m_keyFingerprint[2],
@@ -816,7 +816,7 @@ std::string VoIPController::GetDebugLog()
           {
               { "out", static_cast<int>(m_seq) },
               { "in", static_cast<int>(m_packetsReceived) },
-              { "lost_out", static_cast<int>(m_conctl->GetSendLossCount()) },
+              { "lost_out", static_cast<int>(m_congestionControl->GetSendLossCount()) },
               { "lost_in", static_cast<int>(m_recvLossCount) }
           }
         },
@@ -1107,7 +1107,7 @@ void VoIPController::InitializeTimers()
         {
             if (m_statsDump != nullptr && m_incomingStreams.size() == 1)
             {
-                std::shared_ptr<JitterBuffer>& jitterBuffer = m_incomingStreams[0]->jitterBuffer;
+                const std::shared_ptr<JitterBuffer>& jitterBuffer = m_incomingStreams[0]->jitterBuffer;
                 //fprintf(statsDump, "Time\tRTT\tLISeq\tLASeq\tCWnd\tBitrate\tJitter\tJDelay\tAJDelay\n");
                 fprintf(m_statsDump, "%.3f\t%.3f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.3f\t%.3f\t%.3f\n",
                     GetCurrentTime() - m_connectionInitTime,
@@ -1116,13 +1116,13 @@ void VoIPController::InitializeTimers()
                     m_seq.load(),
                     m_lastRemoteAckSeq,
                     m_recvLossCount,
-                    m_conctl ? m_conctl->GetSendLossCount() : 0,
-                    m_conctl ? static_cast<int>(m_conctl->GetInflightDataSize()) : 0,
+                    m_congestionControl ? m_congestionControl->GetSendLossCount() : 0,
+                    m_congestionControl ? static_cast<int>(m_congestionControl->GetInflightDataSize()) : 0,
                     m_encoder ? m_encoder->GetBitrate() : 0,
                     m_encoder ? m_encoder->GetPacketLoss() : 0,
-                    jitterBuffer ? jitterBuffer->GetLastMeasuredJitter() : 0,
-                    jitterBuffer ? jitterBuffer->GetLastMeasuredDelay() * 0.06 : 0,
-                    jitterBuffer ? jitterBuffer->GetAverageDelay() * 0.06 : 0);
+                    jitterBuffer != nullptr ? jitterBuffer->GetLastMeasuredJitter() : 0,
+                    jitterBuffer != nullptr ? jitterBuffer->GetLastMeasuredDelay() * 0.06 : 0,
+                    jitterBuffer != nullptr ? jitterBuffer->GetAverageDelay() * 0.06 : 0);
             }
         },
         0.1, 0.1);
@@ -1338,7 +1338,7 @@ void VoIPController::HandleAudioInput(std::uint8_t* data, std::size_t len, std::
             /*.endpoint=*/0,
         };
 
-        m_conctl->PacketSent(p.seq, p.len);
+        m_congestionControl->PacketSent(p.seq, p.len);
 
         SendOrEnqueuePacket(std::move(p));
         if (m_peerVersion < 7 && secondaryLen != 0 && m_shittyInternetMode)
@@ -1461,16 +1461,16 @@ void VoIPController::StartAudio()
 void VoIPController::OnAudioOutputReady()
 {
     LOGI("Audio I/O ready");
-    std::shared_ptr<Stream>& stm = m_incomingStreams[0];
-    stm->decoder = std::make_shared<OpusDecoder>(m_audioOutput, true, m_peerVersion >= 6);
-    stm->decoder->SetEchoCanceller(m_echoCanceller);
+    std::shared_ptr<Stream>& stream = m_incomingStreams[0];
+    stream->decoder = std::make_shared<OpusDecoder>(m_audioOutput, true, m_peerVersion >= 6);
+    stream->decoder->SetEchoCanceller(m_echoCanceller);
     if (m_config.enableVolumeControl)
     {
-        stm->decoder->AddAudioEffect(&m_outputVolume);
+        stream->decoder->AddAudioEffect(&m_outputVolume);
     }
-    stm->decoder->SetJitterBuffer(stm->jitterBuffer);
-    stm->decoder->SetFrameDuration(stm->frameDuration);
-    stm->decoder->Start();
+    stream->decoder->SetJitterBuffer(stream->jitterBuffer);
+    stream->decoder->SetFrameDuration(stream->frameDuration);
+    stream->decoder->Start();
 }
 
 void VoIPController::UpdateAudioOutputState()
@@ -2550,7 +2550,7 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
         }
         std::vector<std::uint32_t> peerAcks;
         m_lastRemoteAckSeq = ackId;
-        m_conctl->PacketAcknowledged(ackId);
+        m_congestionControl->PacketAcknowledged(ackId);
         peerAcks.emplace_back(ackId);
         for (unsigned int i = 0; i < 32; ++i)
         {
@@ -2578,7 +2578,7 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
                 }
 
                 // TODO move this to a PacketSender
-                m_conctl->PacketAcknowledged(opkt.seq);
+                m_congestionControl->PacketAcknowledged(opkt.seq);
             }
         }
 
@@ -3161,18 +3161,18 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
         {
             std::uint32_t lastTimestamp = in.ReadUInt32();
             std::uint8_t count = in.ReadUInt8();
-            for (std::shared_ptr<Stream>& stm : m_incomingStreams)
+            for (std::shared_ptr<Stream>& stream : m_incomingStreams)
             {
-                if (stm->id == streamID)
+                if (stream->id == streamID)
                 {
                     for (unsigned int i = 0; i < count; ++i)
                     {
                         std::uint8_t dlen = in.ReadUInt8();
                         std::uint8_t data[256];
                         in.ReadBytes(data, dlen);
-                        if (stm->jitterBuffer != nullptr)
+                        if (stream->jitterBuffer != nullptr)
                         {
-                            stm->jitterBuffer->HandleInput(data, dlen, lastTimestamp - (count - i - 1) * stm->frameDuration, true);
+                            stream->jitterBuffer->HandleInput(data, dlen, lastTimestamp - (count - i - 1) * stream->frameDuration, true);
                         }
                     }
                     break;
@@ -3181,18 +3181,18 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
         }
         else
         {
-            std::shared_ptr<Stream> stm = GetStreamByID(streamID, false);
-            if (stm == nullptr)
+            std::shared_ptr<Stream> stream = GetStreamByID(streamID, false);
+            if (stream == nullptr)
             {
                 LOGW("Received FEC packet for unknown stream %u", streamID);
                 return;
             }
-            if (stm->type != StreamType::VIDEO)
+            if (stream->type != StreamType::VIDEO)
             {
                 LOGW("Received FEC packet for non-video stream %u", streamID);
                 return;
             }
-            if (stm->packetReassembler == nullptr)
+            if (stream->packetReassembler == nullptr)
                 return;
 
             std::uint8_t fseq = in.ReadUInt8();
@@ -3205,7 +3205,7 @@ simpleAudioBlock random_id:long random_bytes:string raw_data:string = DecryptedA
             Buffer fecData(fecLen);
             in.ReadBytes(fecData);
 
-            stm->packetReassembler->AddFEC(std::move(fecData), fseq, prevFrameCount, fecScheme);
+            stream->packetReassembler->AddFEC(std::move(fecData), fseq, prevFrameCount, fecScheme);
         }
         break;
     }
@@ -3232,36 +3232,36 @@ void VoIPController::ProcessExtraData(Buffer& data)
         std::uint8_t id = in.ReadUInt8();
         std::uint32_t flags = in.ReadUInt32();
         LOGV("Peer stream state: id %u flags %u", id, flags);
-        for (std::shared_ptr<Stream>& s : m_incomingStreams)
+        for (std::shared_ptr<Stream>& stream : m_incomingStreams)
         {
-            if (s->id == id)
+            if (stream->id == id)
             {
-                bool prevEnabled = s->enabled;
-                bool prevPaused = s->paused;
-                s->enabled = (flags & STREAM_FLAG_ENABLED) == STREAM_FLAG_ENABLED;
-                s->paused = (flags & STREAM_FLAG_PAUSED) == STREAM_FLAG_PAUSED;
+                bool prevEnabled = stream->enabled;
+                bool prevPaused = stream->paused;
+                stream->enabled = (flags & STREAM_FLAG_ENABLED) == STREAM_FLAG_ENABLED;
+                stream->paused = (flags & STREAM_FLAG_PAUSED) == STREAM_FLAG_PAUSED;
                 if (flags & STREAM_FLAG_EXTRA_EC)
                 {
-                    if (!s->extraECEnabled)
+                    if (!stream->extraECEnabled)
                     {
-                        s->extraECEnabled = true;
-                        if (s->jitterBuffer)
-                            s->jitterBuffer->SetMinPacketCount(4);
+                        stream->extraECEnabled = true;
+                        if (stream->jitterBuffer != nullptr)
+                            stream->jitterBuffer->SetMinPacketCount(4);
                     }
                 }
                 else
                 {
-                    if (s->extraECEnabled)
+                    if (stream->extraECEnabled)
                     {
-                        s->extraECEnabled = false;
-                        if (s->jitterBuffer)
-                            s->jitterBuffer->SetMinPacketCount(2);
+                        stream->extraECEnabled = false;
+                        if (stream->jitterBuffer != nullptr)
+                            stream->jitterBuffer->SetMinPacketCount(2);
                     }
                 }
-                if (prevEnabled != s->enabled && s->type == StreamType::VIDEO && m_videoRenderer)
-                    m_videoRenderer->SetStreamEnabled(s->enabled);
-                if (prevPaused != s->paused && s->type == StreamType::VIDEO && m_videoRenderer)
-                    m_videoRenderer->SetStreamPaused(s->paused);
+                if (prevEnabled != stream->enabled && stream->type == StreamType::VIDEO && m_videoRenderer)
+                    m_videoRenderer->SetStreamEnabled(stream->enabled);
+                if (prevPaused != stream->paused && stream->type == StreamType::VIDEO && m_videoRenderer)
+                    m_videoRenderer->SetStreamPaused(stream->paused);
                 UpdateAudioOutputState();
                 break;
             }
@@ -3283,21 +3283,21 @@ void VoIPController::ProcessExtraData(Buffer& data)
         SendExtra(buf, ExtraType::STREAM_CSD);
 		 */
         std::uint8_t streamID = in.ReadUInt8();
-        for (std::shared_ptr<Stream>& stm : m_incomingStreams)
+        for (std::shared_ptr<Stream>& stream : m_incomingStreams)
         {
-            if (stm->id == streamID)
+            if (stream->id == streamID)
             {
-                stm->codecSpecificData.clear();
-                stm->csdIsValid = false;
-                stm->width = static_cast<unsigned int>(in.ReadUInt16());
-                stm->height = static_cast<unsigned int>(in.ReadUInt16());
+                stream->codecSpecificData.clear();
+                stream->csdIsValid = false;
+                stream->width = static_cast<unsigned int>(in.ReadUInt16());
+                stream->height = static_cast<unsigned int>(in.ReadUInt16());
                 std::size_t count = in.ReadUInt8();
                 for (std::size_t i = 0; i < count; i++)
                 {
                     std::size_t len = in.ReadUInt8();
                     Buffer csd(len);
                     in.ReadBytes(*csd, len);
-                    stm->codecSpecificData.emplace_back(std::move(csd));
+                    stream->codecSpecificData.emplace_back(std::move(csd));
                 }
                 break;
             }
@@ -3990,34 +3990,34 @@ void VoIPController::ResetEndpointPingStats()
 
 void VoIPController::SetVideoSource(video::VideoSource* source)
 {
-    std::shared_ptr<Stream> stm = GetStreamByType(StreamType::VIDEO, true);
-    if (!stm)
+    std::shared_ptr<Stream> stream = GetStreamByType(StreamType::VIDEO, true);
+    if (stream == nullptr)
     {
         LOGE("Can't set video source when there is no outgoing video stream");
         return;
     }
 
-    if (source)
+    if (source != nullptr)
     {
-        if (!stm->enabled)
+        if (!stream->enabled)
         {
-            stm->enabled = true;
-            m_messageThread.Post([this, stm] { SendStreamFlags(*stm); });
+            stream->enabled = true;
+            m_messageThread.Post([this, stream] { SendStreamFlags(*stream); });
         }
 
-        if (!m_videoPacketSender)
-            m_videoPacketSender = new video::VideoPacketSender(this, source, stm);
+        if (m_videoPacketSender == nullptr)
+            m_videoPacketSender = new video::VideoPacketSender(this, source, stream);
         else
             m_videoPacketSender->SetSource(source);
     }
     else
     {
-        if (stm->enabled)
+        if (stream->enabled)
         {
-            stm->enabled = false;
-            m_messageThread.Post([this, stm] { SendStreamFlags(*stm); });
+            stream->enabled = false;
+            m_messageThread.Post([this, stream] { SendStreamFlags(*stream); });
         }
-        if (m_videoPacketSender)
+        if (m_videoPacketSender != nullptr)
         {
             m_videoPacketSender->SetSource(nullptr);
         }
@@ -4042,8 +4042,8 @@ void VoIPController::SetVideoCodecSpecificData(const std::vector<Buffer>& data)
 void VoIPController::SendVideoFrame(const Buffer& frame, std::uint32_t flags, std::uint32_t rotation)
 {
     //LOGI("Send video frame %u flags %u", (unsigned int)frame.Length(), flags);
-    std::shared_ptr<Stream> stm = GetStreamByType(StreamType::VIDEO, true);
-    if (stm)
+    std::shared_ptr<Stream> stream = GetStreamByType(StreamType::VIDEO, true);
+    if (stream != nullptr)
     {
     }
 }
@@ -4055,9 +4055,9 @@ void VoIPController::ProcessIncomingVideoFrame(Buffer frame, std::uint32_t pts, 
     {
         LOGE("EMPTY FRAME");
     }
-    if (m_videoRenderer)
+    if (m_videoRenderer != nullptr)
     {
-        std::shared_ptr<Stream> stm = GetStreamByType(StreamType::VIDEO, false);
+        std::shared_ptr<Stream> stream = GetStreamByType(StreamType::VIDEO, false);
         std::size_t offset = 0;
         if (keyframe)
         {
@@ -4067,19 +4067,19 @@ void VoIPController::ProcessIncomingVideoFrame(Buffer frame, std::uint32_t pts, 
             std::uint8_t sizeAndFlag = in.ReadUInt8();
             int size = sizeAndFlag & 0x0F;
             bool reset = (sizeAndFlag & 0x80) == 0x80;
-            if (reset || !stm->csdIsValid || stm->width != width || stm->height != height)
+            if (reset || !stream->csdIsValid || stream->width != width || stream->height != height)
             {
-                stm->width = width;
-                stm->height = height;
-                stm->codecSpecificData.clear();
+                stream->width = width;
+                stream->height = height;
+                stream->codecSpecificData.clear();
                 for (int i = 0; i < size; i++)
                 {
                     std::size_t len = in.ReadUInt8();
                     Buffer b(len);
                     in.ReadBytes(b);
-                    stm->codecSpecificData.emplace_back(std::move(b));
+                    stream->codecSpecificData.emplace_back(std::move(b));
                 }
-                stm->csdIsValid = false;
+                stream->csdIsValid = false;
             }
             else
             {
@@ -4091,18 +4091,18 @@ void VoIPController::ProcessIncomingVideoFrame(Buffer frame, std::uint32_t pts, 
             }
             offset = in.GetOffset();
         }
-        if (!stm->csdIsValid && stm->width && stm->height)
+        if (!stream->csdIsValid && stream->width && stream->height)
         {
-            m_videoRenderer->Reset(stm->codec, stm->width, stm->height, stm->codecSpecificData);
-            stm->csdIsValid = true;
+            m_videoRenderer->Reset(stream->codec, stream->width, stream->height, stream->codecSpecificData);
+            stream->csdIsValid = true;
         }
         if (m_lastReceivedVideoFrameNumber == UINT32_MAX || m_lastReceivedVideoFrameNumber == pts - 1 || keyframe)
         {
             m_lastReceivedVideoFrameNumber = pts;
             //LOGV("3 before decode %u", (unsigned int)frame.Length());
-            if (stm->rotation != rotation)
+            if (stream->rotation != rotation)
             {
-                stm->rotation = rotation;
+                stream->rotation = rotation;
                 m_videoRenderer->SetRotation(rotation);
             }
             if (offset == 0)
@@ -4360,10 +4360,10 @@ void VoIPController::UpdateRTT()
 
 void VoIPController::UpdateCongestion()
 {
-    if (m_conctl == nullptr || m_encoder == nullptr)
+    if (m_congestionControl == nullptr || m_encoder == nullptr)
         return;
 
-    std::uint32_t sendLossCount = m_conctl->GetSendLossCount();
+    std::uint32_t sendLossCount = m_congestionControl->GetSendLossCount();
     m_sendLossCountHistory.Add(sendLossCount - m_prevSendLossCount);
     m_prevSendLossCount = sendLossCount;
     double packetsPerSec = 1000.0 / m_outgoingStreams[0]->frameDuration;
@@ -4427,7 +4427,7 @@ void VoIPController::UpdateCongestion()
 
 void VoIPController::UpdateAudioBitrate()
 {
-    if (m_conctl == nullptr || m_encoder == nullptr)
+    if (m_congestionControl == nullptr || m_encoder == nullptr)
         return;
 
     double time = GetCurrentTime();
@@ -4439,7 +4439,7 @@ void VoIPController::UpdateAudioBitrate()
         SetState(State::FAILED);
     }
 
-    tgvoip::ConctlAct act = m_conctl->GetBandwidthControlAction();
+    tgvoip::ConctlAct act = m_congestionControl->GetBandwidthControlAction();
     if (m_shittyInternetMode)
     {
         m_encoder->SetBitrate(8000);
@@ -4538,12 +4538,12 @@ void VoIPController::UpdateSignalBars()
         signalBarCount = std::min(signalBarCount, 3);
     }
 
-    for (std::shared_ptr<Stream>& stm : m_incomingStreams)
+    for (std::shared_ptr<Stream>& stream : m_incomingStreams)
     {
-        if (stm->jitterBuffer)
+        if (stream->jitterBuffer != nullptr)
         {
             double avgLateCount[3];
-            stm->jitterBuffer->GetAverageLateCount(avgLateCount);
+            stream->jitterBuffer->GetAverageLateCount(avgLateCount);
             if (avgLateCount[2] >= 0.2)
                 signalBarCount = 1;
             else if (avgLateCount[2] >= 0.1)
@@ -4651,16 +4651,16 @@ void VoIPController::SendPublicEndpointsRequest()
 void VoIPController::TickJitterBufferAndCongestionControl()
 {
     // TODO get rid of this and update states of these things internally and retroactively
-    for (std::shared_ptr<Stream>& stm : m_incomingStreams)
+    for (std::shared_ptr<Stream>& stream : m_incomingStreams)
     {
-        if (stm->jitterBuffer != nullptr)
+        if (stream->jitterBuffer != nullptr)
         {
-            stm->jitterBuffer->Tick();
+            stream->jitterBuffer->Tick();
         }
     }
-    if (m_conctl != nullptr)
+    if (m_congestionControl != nullptr)
     {
-        m_conctl->Tick();
+        m_congestionControl->Tick();
     }
 
     //MutexGuard m(queuedPacketsMutex);
@@ -4682,7 +4682,7 @@ void VoIPController::TickJitterBufferAndCongestionControl()
             }
             else if (pkt.type == PktType::STREAM_DATA)
             {
-                m_conctl->PacketLost(pkt.seq);
+                m_congestionControl->PacketLost(pkt.seq);
             }
         }
     }
