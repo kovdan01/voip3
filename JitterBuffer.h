@@ -71,6 +71,7 @@ private:
     mutable Mutex m_mutex;
     std::array<jitter_packet_t, JITTER_SLOT_COUNT> m_slots;
     std::uint32_t m_nextTimestamp = 0;
+    std::uint32_t m_addToTimestamp = 0;
     std::uint32_t m_step;
     std::uint32_t m_minDelay = 6;
     std::uint32_t m_minMinDelay;
