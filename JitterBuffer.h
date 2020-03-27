@@ -11,10 +11,8 @@
 #include "Buffers.h"
 #include "MediaStreamItf.h"
 #include "threading.h"
-#include <atomic>
-#include <cstdio>
-#include <cstdlib>
-#include <vector>
+#include <map>
+#include <cstdint>
 
 #define JITTER_SLOT_COUNT 64
 #define JITTER_SLOT_SIZE 1024
@@ -29,11 +27,12 @@ public:
     ~JitterBuffer();
     void SetMinPacketCount(std::uint32_t count);
     int GetMinPacketCount() const;
-    unsigned int GetCurrentDelay() const;
+    std::uint32_t GetCurrentDelay() const;
     double GetAverageDelay() const;
     void Reset();
     void HandleInput(std::uint8_t* data, std::size_t len, std::uint32_t timestamp, bool isEC);
-    std::size_t HandleOutput(std::uint8_t* buffer, std::size_t len, int offsetInSteps, bool advance, int& playbackScaledDuration, bool& isEC);
+    std::size_t HandleOutput(std::uint8_t* buffer, std::size_t len, std::uint32_t offsetInSteps,
+                             bool advance, int& playbackScaledDuration, bool& isEC);
     void Tick();
     void GetAverageLateCount(double* out) const;
     int GetAndResetLostPacketCount();
@@ -63,12 +62,13 @@ private:
     Status GetInternal(jitter_packet_t* pkt, int offset, bool advance);
     void Advance();
     int GetMinPacketCountNonBlocking() const;
-    unsigned int GetCurrentDelayNonBlocking() const;
+    std::uint32_t GetCurrentDelayNonBlocking() const;
     void ResetNonBlocking();
 
     BufferPool<JITTER_SLOT_SIZE, JITTER_SLOT_COUNT> m_bufferPool;
     mutable Mutex m_mutex;
-    std::array<jitter_packet_t, JITTER_SLOT_COUNT> m_slots;
+    //std::array<jitter_packet_t, JITTER_SLOT_COUNT> m_slots;
+    std::map<std::uint32_t, jitter_packet_t> m_slots;
     std::uint32_t m_nextTimestamp = 0;
     std::uint32_t m_addToTimestamp = 0;
     std::uint32_t m_step;
