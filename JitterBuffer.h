@@ -69,9 +69,10 @@ private:
     BufferPool<JITTER_SLOT_SIZE, JITTER_SLOT_COUNT> m_bufferPool;
     mutable Mutex m_mutex;
     std::array<jitter_packet_t, JITTER_SLOT_COUNT> m_slots;
-    std::int64_t m_nextTimestamp = 0;
+    std::uint32_t m_nextTimestamp = 0;
+    std::uint32_t m_addToTimestamp = 0;
     std::uint32_t m_step;
-    double m_minDelay = 6;
+    std::uint32_t m_minDelay = 6;
     std::uint32_t m_minMinDelay;
     std::uint32_t m_maxMinDelay;
     std::uint32_t m_maxUsedSlots;
