@@ -9,6 +9,7 @@
 #include "VoIPController.h"
 #include "VoIPServerConfig.h"
 
+#include <numeric>
 #include <cmath>
 #include <cstring>
 
@@ -168,12 +169,17 @@ std::size_t JitterBuffer::HandleOutput(std::uint8_t* data, std::size_t len, std:
     {
         playbackScaledDuration = 60;
     }
-    if (result == Status::OK)
+    switch (result)
     {
+    case Status::OK:
         isEC = pkt.isEC;
         return pkt.size;
+    case Status::MISSING:
+        return 0;
+    case Status::REPLACED:
+        isEC = false;
+        return pkt.size;
     }
-    return 0;
 }
 
 JitterBuffer::Status JitterBuffer::GetInternal(jitter_packet_t* pkt, std::uint32_t offset, bool advance)
@@ -229,7 +235,55 @@ JitterBuffer::Status JitterBuffer::GetInternal(jitter_packet_t* pkt, std::uint32
         ResetNonBlocking();
     }
 
-    return Status::MISSING;
+    constexpr std::uint32_t TIMESTAMP_SERACH_RADIUS = 2;
+    std::uint32_t timestampFrom = 0;
+    if (TIMESTAMP_SERACH_RADIUS * m_step < timestampToGet)
+        timestampFrom = timestampToGet - TIMESTAMP_SERACH_RADIUS * m_step;
+    std::uint32_t timestampTo = timestampToGet + TIMESTAMP_SERACH_RADIUS * m_step;
+
+    std::vector<std::pair<std::uint32_t, decltype(m_slots)::iterator>> neighbors;
+    for (std::uint32_t timestamp = timestampFrom; timestamp < timestampTo; timestamp += m_step)
+    {
+        auto it = m_slots.find(timestamp);
+        if (it != m_slots.end())
+        {
+            if (timestamp < timestampToGet)
+                neighbors.emplace_back(timestampToGet - timestamp, it);
+            else
+                neighbors.emplace_back(timestamp - timestampToGet, it);
+        }
+    }
+
+    if (neighbors.empty())
+        return Status::MISSING;
+
+    std::vector<double> coeffs(neighbors.size());
+    std::size_t minSize = std::numeric_limits<std::size_t>::max();
+    for (std::size_t i = 0; i < neighbors.size(); ++i)
+    {
+        coeffs[i] = 1.0 / neighbors[i].first;
+        std::size_t slotSize = neighbors[i].second->second.size;
+        if (slotSize < minSize)
+            minSize = slotSize;
+    }
+
+    pkt->timestamp = timestampToGet;
+    pkt->isEC = false;
+    pkt->size = minSize;
+
+    double coeffSum = std::accumulate(coeffs.begin(), coeffs.end(), 0);
+    for (double& coeff : coeffs)
+        coeff /= coeffSum;
+
+    pkt->buffer = Buffer(minSize);
+    Buffer& buffer = pkt->buffer;
+    for (std::size_t i = 0; i < minSize; ++i)
+        buffer[i] = 0;
+    for (std::size_t neighbor = 0; neighbor < neighbors.size(); ++neighbor)
+        for (std::size_t i = 0; i < minSize; ++i)
+            buffer[i] += static_cast<std::uint8_t>(coeffs[neighbor] * neighbors[neighbor].second->second.buffer[i]);
+
+    return Status::REPLACED;
 }
 
 void JitterBuffer::PutInternal(const jitter_packet_t& pkt, const std::uint8_t* data, bool overwriteExisting)

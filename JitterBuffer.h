@@ -55,6 +55,7 @@ private:
     {
         OK = 1,
         MISSING,
+        REPLACED,
     };
 
     static std::size_t CallbackIn(std::uint8_t* data, std::size_t len, void* param);
