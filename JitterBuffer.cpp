@@ -235,6 +235,11 @@ JitterBuffer::Status JitterBuffer::GetInternal(jitter_packet_t* pkt, std::uint32
         ResetNonBlocking();
     }
 
+    if (!(advance && offset == 0))
+        return Status::MISSING;
+
+    LOGV("jitter: trying to replace missing packet with other data");
+
     constexpr std::uint32_t TIMESTAMP_SERACH_RADIUS = 2;
     std::uint32_t timestampFrom = 0;
     if (TIMESTAMP_SERACH_RADIUS * m_step < timestampToGet)
@@ -255,7 +260,12 @@ JitterBuffer::Status JitterBuffer::GetInternal(jitter_packet_t* pkt, std::uint32
     }
 
     if (neighbors.empty())
+    {
+        LOGV("jitter: failed to replace");
         return Status::MISSING;
+    }
+
+    LOGV("jitter: found %d packets with data", neighbors.size());
 
     std::vector<double> coeffs(neighbors.size());
     std::size_t minSize = std::numeric_limits<std::size_t>::max();
